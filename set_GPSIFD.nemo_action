@@ -1,0 +1,9 @@
+[Nemo Action]
+Active=true
+Name=GPS Pos. setzen
+Comment=Lege „GPS Position“ der markierten Fotos fest
+Exec=bash -c 'source ~/programmieren/set_GPSIFD/.venv/bin/activate && streamlit run ~/programmieren/set_GPSIFD/src/streamlit_set_GPSIFD.py -- %F'
+Icon-Name=org.openstreetmap.josm
+Selection=notnone
+Extensions=nodirs;
+Quote=Double
