@@ -2,21 +2,20 @@
 
 Flask app with a three-pane HTML/Leaflet UI.
 Map click events are sent back to the server via JavaScript fetch() — no clipboard.
-Press Ctrl-C to stop the server; GPS EXIF tags are then written to all tagged photos.
+Press Ctrl-C to stop the server; GPS + location EXIF tags are then written via exiftool.
 A .bak copy is created next to each file before its first write.
 """
 
-import shutil
 import socket
+import subprocess
 import sys
 import time
 import webbrowser
-from fractions import Fraction
 from pathlib import Path
 from threading import Thread
 
 import piexif
-import PIL
+import requests
 from flask import Flask, jsonify, render_template_string, request, send_file
 from PIL import Image
 
@@ -27,45 +26,12 @@ app = Flask(__name__)
 photos: list[Path] = []
 # Keyed by filename (not absolute Path!) — assumes unique basenames across the selection.
 photo_index: dict[str, Path] = {}
-# Filled incrementally as the user clicks the map; printed on exit.
+# Filled incrementally as the user clicks the map; written to EXIF on exit.
 coords: dict[str, tuple[float, float]] = {}
-# Fotos already carrying coordinates. Are skipped when writing EXIF metadata.
+# Photos already carrying coordinates — skipped when writing EXIF metadata.
 pre_tagged: set[str] = set()
 
 # ── EXIF helpers ──────────────────────────────────────────────────────────────
-
-
-def _deg_to_dms_rational(deg_float):
-    deg = int(abs(deg_float))
-    minutes_float = (abs(deg_float) - deg) * 60
-    minutes = int(minutes_float)
-    seconds = round((minutes_float - minutes) * 60, 6)
-
-    def to_rational(n):
-        f = Fraction(str(n)).limit_denominator(1_000_000)
-        return (f.numerator, f.denominator)
-
-    return (to_rational(deg), to_rational(minutes), to_rational(seconds))
-
-
-def _make_gps_exif(lat: float, lng: float) -> dict:
-    return {
-        piexif.GPSIFD.GPSLatitudeRef: (b'N' if lat >= 0 else b'S'),
-        piexif.GPSIFD.GPSLatitude: _deg_to_dms_rational(lat),
-        piexif.GPSIFD.GPSLongitudeRef: (b'E' if lng >= 0 else b'W'),
-        piexif.GPSIFD.GPSLongitude: _deg_to_dms_rational(lng),
-    }
-
-
-def _write_gps_to_file(path: Path, lat: float, lng: float) -> None:
-    backup = path.with_name(path.name + '.bak')
-    if not backup.exists():
-        shutil.copy2(path, backup)
-    img = Image.open(path)
-    exif_dict = piexif.load(img.info.get('exif', b''))
-    exif_dict['GPS'].update(_make_gps_exif(lat, lng))
-    img.save(path, 'jpeg', exif=piexif.dump(exif_dict))
-    img.close()
 
 
 def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
@@ -92,6 +58,42 @@ def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
         return lat, lng
     except Exception:
         return None
+
+
+def _reverse_geocode(lat: float, lng: float) -> tuple[str, str] | None:
+    """Return (city, country) from Nominatim, or None on failure."""
+    try:
+        r = requests.get(
+            'https://nominatim.openstreetmap.org/reverse',
+            params={'lat': lat, 'lon': lng, 'format': 'json'},
+            headers={'User-Agent': 'geocoding_photos/1.0'},
+            timeout=10,
+        )
+        addr = r.json().get('address', {})
+        city = addr.get('city') or addr.get('town') or addr.get('village', '')
+        country = addr.get('country', '')
+    except requests.exceptions.Timeout:
+        return None
+    else:
+        return city, country
+
+
+def _write_exif(path: Path, lat: float, lng: float, city: str, country: str) -> None:
+    subprocess.run(
+        [
+            '/usr/bin/exiftool',
+            f'-GPSLatitude={abs(lat)}',
+            f'-GPSLatitudeRef={"N" if lat >= 0 else "S"}',
+            f'-GPSLongitude={abs(lng)}',
+            f'-GPSLongitudeRef={"E" if lng >= 0 else "W"}',
+            f'-IPTC:City={city}',
+            f'-IPTC:Country-PrimaryLocationName={country}',
+            '-overwrite_original',
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
 
 
 # ── Flask routes ──────────────────────────────────────────────────────────────
@@ -124,7 +126,7 @@ def receive_coords():
     # Set coordinates of photo
     if photo in photo_index:
         coords[photo] = (float(body['lat']), float(body['lng']))
-        # If coordinates were updated, remove it from pre_tagged
+        # If coordinates were updated, remove it from pre_tagged so it gets written on exit.
         pre_tagged.discard(photo)
     # Return the full dict so the client could sync state on page reload if needed.
     # Currently, not used.
@@ -160,17 +162,18 @@ def main():
     global photos, photo_index  # noqa: PLW0603
     photos = [Path(p).absolute() for p in sys.argv[1:]]
     photo_index = {p.name: p for p in photos}
+
+    if not photos:
+        print('Usage: python flask_fetch_set_GPSIFD.py foto1.jpg foto2.jpg')
+        return
+
     # Some photos already have coordinates. To indicate this, they will be 'tagged'.
     for name, path in photo_index.items():
         result = _read_gps_from_file(path)
         if result:
             coords[name] = result
-    # Not within 'global' because the object is altered directly and not assignment happens
+    # Not within 'global' because the object is altered directly and no assignment happens.
     pre_tagged.update(coords)
-
-    if not photos:
-        print('Usage: python flask_fetch_set_GPSIFD.py foto1.jpg foto2.jpg')
-        return
 
     port = find_open_port()
     # Run Flask in a daemon thread so the main thread can stay free for the
@@ -188,26 +191,22 @@ def main():
     except KeyboardInterrupt:
         pass
 
-    if not coords:
-        print('\nNo coordinates collected — nothing written.')
+    # Filter out pre_tagged photos
+    to_write = {n: v for n, v in coords.items() if n not in pre_tagged}
+    if not to_write:
+        print('\nNo new coordinates — nothing written.')
         return
 
-    print('\nWriting GPS EXIF tags...')
-    for name, (lat, lng) in coords.items():
-        # Skip photos which already have coordinates
-        if name in pre_tagged:
-            continue
+    print('\nWriting EXIF tags...')
+    for name, (lat, lng) in to_write.items():
         path = photo_index[name]
         try:
-            _write_gps_to_file(path, lat, lng)
-            print(f'  ✅  {path}  ({lat:.6f}, {lng:.6f})')
-        except (
-            OSError,
-            FileNotFoundError,
-            PIL.UnidentifiedImageError,
-            piexif.InvalidImageDataError,
-            KeyError,
-        ) as exc:
+            location = _reverse_geocode(lat, lng)
+            city, country = location or ('', '')
+            _write_exif(path, lat, lng, city, country)
+            label = f'{city}, {country}' if city or country else 'location unknown'
+            print(f'  ✅  {path}  ({lat:.6f}, {lng:.6f})  —  {label}')
+        except Exception as exc:
             print(f'  ❌  {path}: {exc}')
 
 
