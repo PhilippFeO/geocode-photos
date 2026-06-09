@@ -89,6 +89,17 @@ TEMPLATE_HTML = r"""<!DOCTYPE html>
   // an extra round-trip to the server.
   const stored_coords = {};
 
+  // ── On load: mark photos that already have GPS coords as tagged ──
+  fetch('/coords')
+    .then(r => r.json())
+    .then(data => {
+      for (const [name, [lat, lng]] of Object.entries(data)) {
+        stored_coords[name] = { lat, lng };
+        const btn = document.querySelector(`.photo-btn[data-name="${CSS.escape(name)}"]`);
+        if (btn) btn.classList.add('tagged');
+      }
+    });
+
   // ── Initialise Leaflet map ──
   // setView([lat, lng], zoom) — centred on southern Germany as a neutral default.
   const map = L.map('map').setView([48.5, 9.0], 10);
