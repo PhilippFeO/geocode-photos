@@ -9,7 +9,7 @@ flask:
 	@python3 src/flask_set_GPSIFD.py ./jpgs/without.jpg
 
 flask-fetch: 
-	@python3 src/flask_fetch_set_GPSIFD.py ./jpgs/*.jpg
+	@python3 flask_fetch_set_GPSIFD.py ./jpgs/*.jpg
 
 file:
 	@python3 src/file_set_GPSIFD.py ./jpgs/without.jpg

@@ -1,0 +1,165 @@
+# ── HTML template ─────────────────────────────────────────────────────────────
+# Jinja2 renders `photos` (list of filenames) into the sidebar button list.
+# Everything else is plain HTML/CSS/JS — no framework.
+
+TEMPLATE_HTML = r"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>GPS EXIF Setter</title>
+
+  <!-- Leaflet: lightweight OSM map library, no account/API-key needed -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    /* Full-height three-column flex layout: sidebar | preview | map */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { display: flex; height: 100vh; font-family: sans-serif; font-size: 14px; }
+
+    /* ── Left pane: scrollable photo list ── */
+    #sidebar {
+      width: 220px; min-width: 220px;
+      display: flex; flex-direction: column;
+      border-right: 1px solid #ccc; overflow-y: auto;
+    }
+    #sidebar h2 { padding: 10px; font-size: 14px; border-bottom: 1px solid #eee; }
+    .photo-btn {
+      display: block; width: 100%; text-align: left;
+      padding: 7px 10px; border: none; background: none;
+      cursor: pointer; border-bottom: 1px solid #f0f0f0;
+    }
+    .photo-btn:hover  { background: #f5f5f5; }
+    /* .active: currently selected photo */
+    .photo-btn.active { background: #ddeeff; font-weight: bold; }
+    /* .tagged: coordinates have been assigned — CSS appends a checkmark via ::after */
+    .photo-btn.tagged::after { content: " ✓"; color: #2a2; }
+
+    /* ── Middle pane: status bar + photo preview ── */
+    #preview {
+      flex: 1; display: flex; flex-direction: column;
+      border-right: 1px solid #ccc; overflow: hidden;
+      min-width: 0;   /* prevents flex child from overflowing its parent */
+    }
+    #status {
+      padding: 6px 10px; font-size: 12px; color: #555;
+      border-bottom: 1px solid #eee; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #img-wrap {
+      flex: 1; display: flex;
+      align-items: center; justify-content: center;
+      background: #1a1a1a; overflow: hidden;
+    }
+    /* Letterbox the image — never crop, never overflow */
+    #img-wrap img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+    /* ── Right pane: Leaflet map ── */
+    #map { flex: 1; min-width: 0; }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar: one button per photo, rendered by Jinja2 ── -->
+<div id="sidebar">
+  <h2>Photos</h2>
+  {% for name in photos %}
+  <!-- data-name is used by JS to find this button without fragile text matching -->
+  <button class="photo-btn" data-name="{{ name }}"
+          onclick="selectPhoto('{{ name }}', this)">{{ name }}</button>
+  {% endfor %}
+</div>
+
+<!-- ── Middle pane: coordinate readout + image ── -->
+<div id="preview">
+  <div id="status">← Select a photo, then click the map.</div>
+  <div id="img-wrap"><img id="img" src="" alt=""/></div>
+</div>
+
+<!-- ── Right pane: Leaflet fills this div ── -->
+<div id="map"></div>
+
+<script>
+  // Name of the photo the user has selected in the sidebar (null = none).
+  let current_photo = null;
+  // Active Leaflet marker on the map (only one at a time).
+  let marker  = null;
+  // Client-side mirror of the server's coords dict: { name: {lat, lng} }.
+  // Kept in sync so we can redraw the marker instantly on photo switch without
+  // an extra round-trip to the server.
+  const stored_coords = {};
+
+  // ── Initialise Leaflet map ──
+  // setView([lat, lng], zoom) — centred on southern Germany as a neutral default.
+  const map = L.map('map').setView([48.5, 9.0], 10);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19,
+  }).addTo(map);
+
+  // ── selectPhoto: called when the user clicks a sidebar button ──
+  function selectPhoto(name, btn) {
+    current_photo = name;
+    // Load the photo via the Flask /photo/<name> route — no base64 embedding needed.
+    document.getElementById('img').src = '/photo/' + encodeURIComponent(name);
+    // Highlight the active button.
+    document.querySelectorAll('.photo-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    // If this photo already has coords, show the marker and pan to it;
+    // otherwise clear any leftover marker from the previous photo.
+    if (stored_coords[name]) {
+      placeMarker(stored_coords[name].lat, stored_coords[name].lng);
+      map.setView([stored_coords[name].lat, stored_coords[name].lng], 12);
+    } else if (marker) {
+      marker.remove();
+      marker = null;
+    }
+    refreshStatus();
+  }
+
+  // ── placeMarker: remove the old marker and add a new one ──
+  function placeMarker(lat, lng) {
+    if (marker) marker.remove();
+    marker = L.marker([lat, lng]).addTo(map);
+  }
+
+  // ── refreshStatus: update the one-line readout above the image ──
+  function refreshStatus() {
+    // 'status' is an id assigned above to an HTML element.
+    const el = document.getElementById('status');
+    if (!current_photo) { el.textContent = '← Select a photo, then click the map.'; return; }
+    const c = stored_coords[current_photo];
+    el.textContent = c
+      ? current_photo + '  →  ' + c.lat.toFixed(6) + ',  ' + c.lng.toFixed(6)
+      : current_photo + '  —  click the map to assign coordinates';
+  }
+
+  // ── Map click handler: the core of the fetch() approach ──
+  // Leaflet fires this with e.latlng whenever the user clicks the map.
+  map.on('click', function (e) {
+    if (!current_photo) return;   // ignore clicks when no photo is selected
+    const { lat, lng } = e.latlng;
+
+    // Immediate visual feedback — no need to wait for the server response.
+    placeMarker(lat, lng);
+    stored_coords[current_photo] = { lat, lng };
+    // CSS.escape handles filenames that contain special characters (spaces, dots …).
+      // Finds button with class '.photo-btn' and attribute 'data-name' matching 'current_photo'
+    document.querySelector(`.photo-btn[data-name="${CSS.escape(current_photo)}"]`)
+            .classList.add('tagged');
+    refreshStatus();
+
+    // Persist to server asynchronously.
+    // The server responds with the full coords dict, but we ignore it here
+    // because the client-side `stored_coords` object already reflects the new state.
+    _ = fetch('/coords', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photo: current_photo, lat, lng }),
+    });
+  });
+</script>
+
+</body>
+</html>
+"""
