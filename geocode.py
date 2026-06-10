@@ -49,7 +49,10 @@ def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
             return None
 
         def dms_to_deg(dms):
-            return sum(r[0] / r[1] / factor for r, factor in zip(dms, (1, 60, 3600)))
+            return sum(
+                r[0] / r[1] / factor
+                for r, factor in zip(dms, (1, 60, 3600), strict=False)
+            )
 
         lat = dms_to_deg(gps[piexif.GPSIFD.GPSLatitude])
         lng = dms_to_deg(gps[piexif.GPSIFD.GPSLongitude])
