@@ -62,12 +62,16 @@ def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
         return None
 
 
-def _reverse_geocode(lat: float, lng: float) -> tuple[str, str] | None:
-    """Return (city, country) from Nominatim, or None on failure."""
+def _reverse_geocode(lat: float, lng: float) -> dict | None:
+    """Return address fields from Nominatim, or None on failure."""
     try:
         r = requests.get(
             'https://nominatim.openstreetmap.org/reverse',
-            params={'lat': lat, 'lon': lng, 'format': 'json'},
+            params={
+                'lat': lat,
+                'lon': lng,
+                'format': 'json',
+            },
             headers={
                 'User-Agent': 'geocoding_photos/1.0',
                 'Accept-Language': 'de, en;q=0.9',
@@ -75,15 +79,55 @@ def _reverse_geocode(lat: float, lng: float) -> tuple[str, str] | None:
             timeout=10,
         )
         addr = r.json().get('address', {})
-        city = addr.get('city') or addr.get('town') or addr.get('village', '')
-        country = addr.get('country', '')
+        return {
+            'city': addr.get('city') or addr.get('town') or addr.get('village', ''),
+            'state': addr.get('state') or addr.get('county', ''),
+            'country': addr.get('country', ''),
+            'country_code': addr.get('country_code', '').upper(),
+            # filter(None, ...) drops falsy entries (None, ''): when None is passed,
+            # filter substitutes `lambda x: x` internally. Since filter only evaluates
+            # the return value as a boolean (keep/discard), and bool(x) and x yield the
+            # same boolean outcome, None effectively acts as `lambda x: bool(x)`.
+            'sub_location': ', '.join(
+                filter(
+                    None,
+                    [
+                        addr.get('amenity')
+                        or addr.get('building')
+                        or addr.get('tourism'),
+                        # Drop missing parts before joining so 'Hauptstraße None' can't happen.
+                        ' '.join(
+                            filter(
+                                None,
+                                [
+                                    addr.get('road'),
+                                    addr.get('house_number'),
+                                ],
+                            ),
+                        ),
+                        addr.get('suburb')
+                        or addr.get('neighbourhood')
+                        or addr.get('quarter'),
+                    ],
+                ),
+            ),
+        }
     except requests.exceptions.Timeout:
         return None
-    else:
-        return city, country
 
 
-def _write_exif(path: Path, lat: float, lng: float, city: str, country: str) -> None:
+def _write_exif(
+    path: Path,
+    lat: float,
+    lng: float,
+    city: str,
+    state: str,
+    country: str,
+    country_code: str,
+    sub_location: str,
+) -> None:
+    # Bare tag names (no IPTC:/XMP- prefix) let exiftool write both IPTC and
+    # XMP-photoshop in one pass, keeping both metadata blocks in sync.
     subprocess.run(
         [
             '/usr/bin/exiftool',
@@ -91,8 +135,11 @@ def _write_exif(path: Path, lat: float, lng: float, city: str, country: str) -> 
             f'-GPSLatitudeRef={"N" if lat >= 0 else "S"}',
             f'-GPSLongitude={abs(lng)}',
             f'-GPSLongitudeRef={"E" if lng >= 0 else "W"}',
-            f'-IPTC:City={city}',
-            f'-IPTC:Country-PrimaryLocationName={country}',
+            f'-City={city}',
+            f'-Province-State={state}',
+            f'-Country-PrimaryLocationName={country}',
+            f'-Country-PrimaryLocationCode={country_code}',
+            f'-Sub-location={sub_location}',
             '-overwrite_original',
             str(path),
         ],
@@ -213,9 +260,22 @@ def main():
     for name, (lat, lng) in to_write.items():
         path = photo_index[name]
         try:
-            location = _reverse_geocode(lat, lng)
-            city, country = location or ('', '')
-            _write_exif(path, lat, lng, city, country)
+            location = _reverse_geocode(lat, lng) or {}
+            city = location.get('city', '')
+            state = location.get('state', '')
+            country = location.get('country', '')
+            country_code = location.get('country_code', '')
+            sub_location = location.get('sub_location', '')
+            _write_exif(
+                path,
+                lat,
+                lng,
+                city,
+                state,
+                country,
+                country_code,
+                sub_location,
+            )
             label = f'{city}, {country}' if city or country else 'location unknown'
             print(f'  ✅  {path}  ({lat:.6f}, {lng:.6f})  —  {label}')
         except Exception as exc:
