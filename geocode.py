@@ -207,9 +207,10 @@ def find_open_port(prefer: int = 5000) -> int:
         with socket.socket() as s:
             try:
                 s.bind(('127.0.0.1', port))
-                return port
             except OSError:
                 continue
+            else:
+                return port
     return 0
 
 
