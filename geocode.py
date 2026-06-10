@@ -17,11 +17,10 @@ from pathlib import Path
 from threading import Thread
 
 import piexif
+import PIL
 import requests
 from flask import Flask, jsonify, render_template_string, request, send_file
 from PIL import Image
-
-from template import TEMPLATE_HTML
 
 app = Flask(__name__)
 
@@ -60,7 +59,7 @@ def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
             lat = -lat
         if gps.get(piexif.GPSIFD.GPSLongitudeRef, b'E') in (b'W', 'W'):
             lng = -lng
-    except Exception:
+    except (PIL.UnidentifiedImageError, FileNotFoundError):
         return None
     else:
         return lat, lng
@@ -158,7 +157,12 @@ def _write_exif(
 @app.route('/')
 def index():
     # Pass only the filenames to the template; full paths stay server-side.
-    return render_template_string(TEMPLATE_HTML, photos=list(photo_index))
+    return render_template_string(
+        (
+            Path.home() / Path('programmieren/geocoding-photos/template.html')
+        ).read_text(),
+        photos=list(photo_index),
+    )
 
 
 @app.route('/photo/<name>')
