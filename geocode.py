@@ -6,6 +6,8 @@ Press Ctrl-C to stop the server; GPS + location EXIF tags are then written via e
 A .bak copy is created next to each file before its first write.
 """
 
+import os
+import signal
 import socket
 import subprocess
 import sys
@@ -66,7 +68,10 @@ def _reverse_geocode(lat: float, lng: float) -> tuple[str, str] | None:
         r = requests.get(
             'https://nominatim.openstreetmap.org/reverse',
             params={'lat': lat, 'lon': lng, 'format': 'json'},
-            headers={'User-Agent': 'geocoding_photos/1.0'},
+            headers={
+                'User-Agent': 'geocoding_photos/1.0',
+                'Accept-Language': 'de, en;q=0.9',
+            },
             timeout=10,
         )
         addr = r.json().get('address', {})
@@ -137,6 +142,13 @@ def receive_coords():
 def get_coords():
     """Open in browser or curl to inspect collected coords (Convenience endpoint)."""
     return jsonify({k: list(v) for k, v in coords.items()})
+
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """Trigger a clean shutdown — same effect as Ctrl-C."""
+    os.kill(os.getpid(), signal.SIGINT)
+    return 'Shutting down…'
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

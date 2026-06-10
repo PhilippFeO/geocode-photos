@@ -24,6 +24,12 @@ TEMPLATE_HTML = r"""<!DOCTYPE html>
       border-right: 1px solid #ccc; overflow-y: auto;
     }
     #sidebar h2 { padding: 10px; font-size: 14px; border-bottom: 1px solid #eee; }
+    #finish-btn {
+      margin: 10px; padding: 7px 10px;
+      background: #c0392b; color: white; border: none;
+      border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    #finish-btn:hover { background: #a93226; }
     .photo-btn {
       display: block; width: 100%; text-align: left;
       padding: 7px 10px; border: none; background: none;
@@ -68,6 +74,8 @@ TEMPLATE_HTML = r"""<!DOCTYPE html>
   <button class="photo-btn" data-name="{{ name }}"
           onclick="selectPhoto('{{ name }}', this)">{{ name }}</button>
   {% endfor %}
+  <!-- Triggers a clean server shutdown and EXIF writing, same as Ctrl-C -->
+  <button id="finish-btn" onclick="fetch('/shutdown', {method:'POST'}).then(() => window.close())">Finish &amp; Save</button>
 </div>
 
 <!-- ── Middle pane: coordinate readout + image ── -->
