@@ -60,9 +60,10 @@ def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
             lat = -lat
         if gps.get(piexif.GPSIFD.GPSLongitudeRef, b'E') in (b'W', 'W'):
             lng = -lng
-        return lat, lng
     except Exception:
         return None
+    else:
+        return lat, lng
 
 
 def _reverse_geocode(lat: float, lng: float) -> dict | None:
