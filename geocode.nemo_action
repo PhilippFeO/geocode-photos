@@ -1,1 +1,9 @@
-geocode.nemo_action
+[Nemo Action]
+Active=true
+Name=Geoinformationen
+Comment=Füge Geoinformationen (Koordinaten, Land, Ort) hinzu
+Exec=bash -c 'source ~/programmieren/geocoding-photos/.venv/bin/activate && python3 ~/programmieren/geocoding-photos/geocode.py -- %F'
+Icon-Name=org.openstreetmap.josm
+Selection=notnone
+Extensions=nodirs;
+Quote=Double
