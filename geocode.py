@@ -6,6 +6,8 @@ Press Ctrl-C to stop the server; GPS + location EXIF tags are then written via e
 A .bak copy is created next to each file before its first write.
 """
 
+import logging
+import logging.config
 import os
 import signal
 import socket
@@ -19,32 +21,49 @@ from threading import Thread
 import piexif
 import PIL
 import requests
+import yaml
 from flask import Flask, jsonify, render_template_string, request, send_file
 from PIL import Image
 
 app = Flask(__name__)
+logger = logging.getLogger('geocode')
 
 photos: list[Path] = []
+
 # Keyed by filename (not absolute Path!) — assumes unique basenames across the selection.
 photo_index: dict[str, Path] = {}
-# Filled incrementally as the user clicks the map; written to EXIF on exit.
 coords: dict[str, tuple[float, float]] = {}
-# Photos already carrying coordinates — skipped when writing EXIF metadata.
+"""Filled incrementally as the user clicks the map; written to EXIF on exit."""
 pre_tagged: set[str] = set()
+"""Photos already carrying coordinates — skipped when writing EXIF metadata."""
+
+
+def _setup_logging() -> None:
+    config_path = Path(__file__).parent / 'logging.yaml'
+    with config_path.open() as f:
+        logging.config.dictConfig(yaml.safe_load(f))
+
 
 # ── EXIF helpers ──────────────────────────────────────────────────────────────
 
 
-def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
+def _read_gps_from_file(photo: Path) -> tuple[float, float] | None:
     """Return (lat, lng) from a file's GPS EXIF, or None if absent/unreadable."""
+    logger.debug(msg='Read GPS from file.', extra={'photo': photo})
     try:
-        img = Image.open(path)
+        img = Image.open(photo)
         gps = piexif.load(img.info.get('exif', b'')).get('GPS', {})
         img.close()
         if (
             piexif.GPSIFD.GPSLatitude not in gps
             or piexif.GPSIFD.GPSLongitude not in gps
         ):
+            logger.info(
+                msg='No GPS info attached to photo.',
+                extra={
+                    'photo': photo,
+                },
+            )
             return None
 
         def dms_to_deg(dms):
@@ -60,19 +79,33 @@ def _read_gps_from_file(path: Path) -> tuple[float, float] | None:
         if gps.get(piexif.GPSIFD.GPSLongitudeRef, b'E') in (b'W', 'W'):
             lng = -lng
     except (PIL.UnidentifiedImageError, FileNotFoundError):
+        logger.warning(msg='Could not read GPS EXIF.', extra={'photo': str(photo)})
         return None
     else:
+        logger.info(
+            msg='Coordinates red from photo and transformed.',
+            extra={
+                'photo': photo,
+                'lat': lat,
+                'lng': lng,
+            },
+        )
         return lat, lng
 
 
 def _reverse_geocode(lat: float, lng: float) -> dict | None:
     """Return address fields from Nominatim, or None on failure."""
+    logger.debug(
+        msg='Start reverse geocoding.',
+        extra={'lat': lat, 'lng': lng},
+    )
     try:
         r = requests.get(
             'https://nominatim.openstreetmap.org/reverse',
             params={
                 'lat': lat,
                 'lon': lng,
+                # geocodejson also available.
                 'format': 'json',
             },
             headers={
@@ -82,6 +115,9 @@ def _reverse_geocode(lat: float, lng: float) -> dict | None:
             timeout=10,
         )
         addr = r.json().get('address', {})
+        logger.debug(
+            msg='Nominatim API call successful.',
+        )
         return {
             'city': addr.get('city') or addr.get('town') or addr.get('village', ''),
             'state': addr.get('state') or addr.get('county', ''),
@@ -116,11 +152,18 @@ def _reverse_geocode(lat: float, lng: float) -> dict | None:
             ),
         }
     except requests.exceptions.Timeout:
+        logger.warning(
+            msg='Nominatim request timed out.',
+            extra={
+                'lat': lat,
+                'lng': lng,
+            },
+        )
         return None
 
 
 def _write_exif(
-    path: Path,
+    photo: Path,
     lat: float,
     lng: float,
     city: str,
@@ -131,6 +174,19 @@ def _write_exif(
 ) -> None:
     # Bare tag names (no IPTC:/XMP- prefix) let exiftool write both IPTC and
     # XMP-photoshop in one pass, keeping both metadata blocks in sync.
+    logger.info(
+        msg='Writing EXIF',
+        extra={
+            'photo': str(photo),
+            'lat': lat,
+            'lng': lng,
+            'city': city,
+            'state': state,
+            'country_code': country_code,
+            'country': country,
+            'sub_location': sub_location,
+        },
+    )
     subprocess.run(
         [
             '/usr/bin/exiftool',
@@ -144,7 +200,7 @@ def _write_exif(
             f'-Country-PrimaryLocationCode={country_code}',
             f'-Sub-location={sub_location}',
             '-overwrite_original',
-            str(path),
+            str(photo),
         ],
         check=True,
         capture_output=True,
@@ -188,6 +244,14 @@ def receive_coords():
         coords[photo] = (float(body['lat']), float(body['lng']))
         # If coordinates were updated, remove it from pre_tagged so it gets written on exit.
         pre_tagged.discard(photo)
+        logger.info(
+            msg='Coords received',
+            extra={
+                'photo': photo,
+                'lat': body['lat'],
+                'lng': body['lng'],
+            },
+        )
     # Return the full dict so the client could sync state on page reload if needed.
     # Currently, not used.
     return jsonify({k: list(v) for k, v in coords.items()})
@@ -226,18 +290,22 @@ def find_open_port(prefer: int = 5000) -> int:
 
 
 def main():
+    _setup_logging()
     # Otherwise the functions don't see the populated contents, because new locals are created.
     global photos, photo_index  # noqa: PLW0603
     photos = [Path(p).absolute() for p in sys.argv[1:]]
     photo_index = {p.name: p for p in photos}
 
     if not photos:
-        print('Usage: python flask_fetch_set_GPSIFD.py foto1.jpg foto2.jpg')
+        logger.error(
+            msg='No photos provided',
+            extra={'usage': 'python geocode.py foto1.jpg foto2.jpg'},
+        )
         return
 
     # Some photos already have coordinates. To indicate this, they will be 'tagged'.
-    for name, path in photo_index.items():
-        result = _read_gps_from_file(path)
+    for name, photo in photo_index.items():
+        result = _read_gps_from_file(photo)
         if result:
             coords[name] = result
     # Not within 'global' because the object is altered directly and no assignment happens.
@@ -251,7 +319,10 @@ def main():
         daemon=True,
     ).start()
     webbrowser.open(f'http://localhost:{port}/')
-    print(f'Serving at http://localhost:{port}/  —  Ctrl-C to stop and write EXIF tags')
+    logger.info(
+        msg='Server started',
+        extra={'url': f'http://localhost:{port}/', 'photos': len(photos)},
+    )
 
     try:
         while True:
@@ -259,15 +330,15 @@ def main():
     except KeyboardInterrupt:
         pass
 
-    # Filter out pre_tagged photos
+    # Filter out pre_tagged photos. Their GSP coords were not updated and don't have to be written (again).
     to_write = {n: v for n, v in coords.items() if n not in pre_tagged}
     if not to_write:
-        print('\nNo new coordinates — nothing written.')
+        logger.info(msg='No new coordinates — nothing written')
         return
 
-    print('\nWriting EXIF tags...')
+    logger.info(msg='Writing EXIF tags', extra={'count': len(to_write)})
     for name, (lat, lng) in to_write.items():
-        path = photo_index[name]
+        photo = photo_index[name]
         try:
             location = _reverse_geocode(lat, lng) or {}
             city = location.get('city', '')
@@ -276,7 +347,7 @@ def main():
             country_code = location.get('country_code', '')
             sub_location = location.get('sub_location', '')
             _write_exif(
-                path,
+                photo,
                 lat,
                 lng,
                 city,
@@ -286,9 +357,20 @@ def main():
                 sub_location,
             )
             label = f'{city}, {country}' if city or country else 'location unknown'
-            print(f'  ✅  {path}  ({lat:.6f}, {lng:.6f})  —  {label}')
+            logger.info(
+                msg='EXIF written',
+                extra={
+                    'photo': str(photo),
+                    'lat': lat,
+                    'lng': lng,
+                    'label': label,
+                },
+            )
         except Exception as exc:
-            print(f'  ❌  {path}: {exc}')
+            logger.exception(
+                msg='Failed to write EXIF',
+                extra={'photo': str(photo), 'error': str(exc)},
+            )
 
 
 if __name__ == '__main__':

@@ -1,0 +1,37 @@
+version: 1
+disable_existing_loggers: false
+
+loggers:
+  geocode:
+    level: INFO
+    handlers: [nemo]
+    propagate: false
+  # Suppress Werkzeug's per-request noise; only warnings and above pass through.
+  # werkzeug:
+  #   level: WARNING
+  #   handlers: [nemo]
+  #   propagate: false
+
+handlers:
+  nemo:
+    level: INFO
+    class: logging.handlers.RotatingFileHandler
+    formatter: json
+    filename: /home/philipp/programmieren/geocoding-photos/nemo_action.log.json
+    # 1 MB
+    maxBytes: 1000000 
+    backupCount: 2
+  console:
+    level: INFO
+    class: logging.StreamHandler
+    formatter: json
+    stream: stdout
+
+formatters:
+  json:
+    (): pythonjsonlogger.jsonlogger.JsonFormatter
+    fmt: "{levelname} {funcName} {message} {asctime}"
+    style: "{"
+    json_ensure_ascii: false
+    json_indent: 4
+
