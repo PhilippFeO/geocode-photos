@@ -1,0 +1,42 @@
+{
+    'type': 'FeatureCollection',
+    'geocoding': {
+        'version': '0.1.0',
+        'attribution': 'Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright',
+        'licence': 'ODbL',
+        'query': '',
+    },
+    'features': [
+        {
+            'type': 'Feature',
+            'properties': {
+                'geocoding': {
+                    'place_id': 143634177,
+                    'osm_type': 'way',
+                    'osm_id': 518071791,
+                    'osm_key': 'building',
+                    'osm_value': 'gate',
+                    'type': 'house',
+                    'accuracy': 0,
+                    'label': 'Brandenburger Tor, 1, Pariser Platz, Friedrich-Wilhelm-Stadt, Mitte, Berlin, 10117, Deutschland',
+                    'name': 'Brandenburger Tor',
+                    'housenumber': '1',
+                    'postcode': '10117',
+                    'street': 'Pariser Platz',
+                    'locality': 'Friedrich-Wilhelm-Stadt',
+                    'district': 'Mitte',
+                    'city': 'Berlin',
+                    'country': 'Deutschland',
+                    'country_code': 'de',
+                    'admin': {
+                        'level10': 'Mitte',
+                        'level9': 'Mitte',
+                        'level4': 'Berlin',
+                    },
+                }
+            },
+            'geometry': {'type': 'Point', 'coordinates': [13.3777034, 52.5162699]},
+        }
+    ],
+}
+
